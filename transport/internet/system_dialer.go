@@ -20,9 +20,10 @@ type SystemDialer interface {
 }
 
 type DefaultSystemDialer struct {
-	controllers []control.Func
-	dns         dns.Client
-	obm         outbound.Manager
+	controllers                     []control.Func
+	dns                             dns.Client
+	obm                             outbound.Manager
+	applyOutboundSocketOptionsFuncs []func(network string, address string, fd uintptr) error
 }
 
 func resolveSrcAddr(network net.Network, src net.Address) net.Addr {
@@ -75,6 +76,11 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 				if err := applyOutboundSocketOptions("udp", dest.NetAddr(), fd, sockopt); err != nil {
 					newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
 				}
+				for _, f := range d.applyOutboundSocketOptionsFuncs {
+					if err := f("udp", dest.NetAddr(), fd); err != nil {
+						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
+					}
+				}
 			})
 		}
 		return &PacketConnWrapper{
@@ -111,6 +117,11 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 						if err := bindAddr(fd, sockopt.BindAddress, sockopt.BindPort); err != nil {
 							newError("failed to bind source address to ", sockopt.BindAddress).Base(err).WriteToLog(session.ExportIDToError(ctx))
 						}
+					}
+				}
+				for _, f := range d.applyOutboundSocketOptionsFuncs {
+					if err := f(network, address, fd); err != nil {
+						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
 					}
 				}
 			})
@@ -219,5 +230,19 @@ func RegisterDialerController(ctl control.Func) error {
 	}
 
 	dialer.controllers = append(dialer.controllers, ctl)
+	return nil
+}
+
+func RegisterApplyOutboundSocketOptionsFunc(f func(network string, address string, fd uintptr) error) error {
+	if f == nil {
+		return newError("nil apple sockets options func")
+	}
+
+	dialer, ok := effectiveSystemDialer.(*DefaultSystemDialer)
+	if !ok {
+		return newError("RegisterApplySocketOptionsFunc not supported in custom dialer")
+	}
+
+	dialer.applyOutboundSocketOptionsFuncs = append(dialer.applyOutboundSocketOptionsFuncs, f)
 	return nil
 }
