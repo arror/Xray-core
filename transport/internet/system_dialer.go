@@ -75,13 +75,13 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 				return nil, err
 			}
 			sys.Control(func(fd uintptr) {
-				if sockopt != nil {
-					if err := applyOutboundSocketOptions("udp", dest.NetAddr(), fd, sockopt); err != nil {
+				for _, f := range d.outboundDialerSocketOptionsControllers {
+					if err := f("udp", dest.NetAddr(), fd); err != nil {
 						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
 					}
 				}
-				for _, f := range d.outboundDialerSocketOptionsControllers {
-					if err := f("udp", dest.NetAddr(), fd); err != nil {
+				if sockopt != nil {
+					if err := applyOutboundSocketOptions("udp", dest.NetAddr(), fd, sockopt); err != nil {
 						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
 					}
 				}
@@ -113,6 +113,11 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 				}
 			}
 			return c.Control(func(fd uintptr) {
+				for _, f := range d.outboundDialerSocketOptionsControllers {
+					if err := f(network, address, fd); err != nil {
+						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
+					}
+				}
 				if sockopt != nil {
 					if err := applyOutboundSocketOptions(network, address, fd, sockopt); err != nil {
 						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
@@ -121,11 +126,6 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 						if err := bindAddr(fd, sockopt.BindAddress, sockopt.BindPort); err != nil {
 							newError("failed to bind source address to ", sockopt.BindAddress).Base(err).WriteToLog(session.ExportIDToError(ctx))
 						}
-					}
-				}
-				for _, f := range d.outboundDialerSocketOptionsControllers {
-					if err := f(network, address, fd); err != nil {
-						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
 					}
 				}
 			})
@@ -237,6 +237,11 @@ func RegisterDialerController(ctl control.Func) error {
 	return nil
 }
 
+// RegisterOutboundDialerSocketOptionsControllers adds a controller to the effective system dialer.
+// The controller can be used to operate on file descriptors before they are put into use.
+// It only works when effective dialer is the default dialer.
+//
+// xray:api:beta
 func RegisterOutboundDialerSocketOptionsControllers(ctl SocketOptionsFunc) error {
 	if ctl == nil {
 		return newError("nil apple sockets options func")
