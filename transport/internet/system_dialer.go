@@ -19,11 +19,13 @@ type SystemDialer interface {
 	DestIpAddress() net.IP
 }
 
+type SocketOptionsFunc = func(network string, address string, fd uintptr) error
+
 type DefaultSystemDialer struct {
-	controllers                     []control.Func
-	dns                             dns.Client
-	obm                             outbound.Manager
-	applyOutboundSocketOptionsFuncs []func(network string, address string, fd uintptr) error
+	controllers                            []control.Func
+	dns                                    dns.Client
+	obm                                    outbound.Manager
+	outboundDialerSocketOptionsControllers []SocketOptionsFunc
 }
 
 func resolveSrcAddr(network net.Network, src net.Address) net.Addr {
@@ -67,7 +69,7 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 		if err != nil {
 			return nil, err
 		}
-		if sockopt != nil || len(d.applyOutboundSocketOptionsFuncs) > 0 {
+		if sockopt != nil || len(d.outboundDialerSocketOptionsControllers) > 0 {
 			sys, err := packetConn.(*net.UDPConn).SyscallConn()
 			if err != nil {
 				return nil, err
@@ -78,7 +80,7 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
 					}
 				}
-				for _, f := range d.applyOutboundSocketOptionsFuncs {
+				for _, f := range d.outboundDialerSocketOptionsControllers {
 					if err := f("udp", dest.NetAddr(), fd); err != nil {
 						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
 					}
@@ -100,7 +102,7 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 		KeepAlive: goStdKeepAlive,
 	}
 
-	if sockopt != nil || len(d.controllers) > 0 || len(d.applyOutboundSocketOptionsFuncs) > 0 {
+	if sockopt != nil || len(d.controllers) > 0 || len(d.outboundDialerSocketOptionsControllers) > 0 {
 		if sockopt != nil && sockopt.TcpMptcp {
 			dialer.SetMultipathTCP(true)
 		}
@@ -121,7 +123,7 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 						}
 					}
 				}
-				for _, f := range d.applyOutboundSocketOptionsFuncs {
+				for _, f := range d.outboundDialerSocketOptionsControllers {
 					if err := f(network, address, fd); err != nil {
 						newError("failed to apply socket options").Base(err).WriteToLog(session.ExportIDToError(ctx))
 					}
@@ -235,8 +237,8 @@ func RegisterDialerController(ctl control.Func) error {
 	return nil
 }
 
-func RegisterApplyOutboundSocketOptionsFunc(f func(network string, address string, fd uintptr) error) error {
-	if f == nil {
+func RegisterOutboundDialerSocketOptionsControllers(ctl SocketOptionsFunc) error {
+	if ctl == nil {
 		return newError("nil apple sockets options func")
 	}
 
@@ -245,6 +247,6 @@ func RegisterApplyOutboundSocketOptionsFunc(f func(network string, address strin
 		return newError("RegisterApplySocketOptionsFunc not supported in custom dialer")
 	}
 
-	dialer.applyOutboundSocketOptionsFuncs = append(dialer.applyOutboundSocketOptionsFuncs, f)
+	dialer.outboundDialerSocketOptionsControllers = append(dialer.outboundDialerSocketOptionsControllers, ctl)
 	return nil
 }
